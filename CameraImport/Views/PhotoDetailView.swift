@@ -99,10 +99,12 @@ private struct PhotoPageView: View {
             if file.isVideo {
                 videoContent
             } else if let image = file.fullImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ZoomableScrollView {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else if file.isRaw {
                 // RAW：不显示网格小图，避免把缩略图误当成预览结果
                 if let error = file.loadError {
@@ -190,16 +192,16 @@ private struct VideoPlayerView: View {
     var body: some View {
         ZStack {
             Color.black
-            PlayerLayerView(player: model.player)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZoomableScrollView(onTap: {
+                model.revealControls()
+            }) {
+                PlayerLayerView(player: model.player)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             if model.showControls {
                 controls
             }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            model.revealControls()
         }
         .onAppear {
             model.load(url: url)
@@ -354,4 +356,129 @@ private struct PlayerLayerView: UIViewRepresentable {
 private final class PlayerUIView: UIView {
     override static var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+}
+
+/// 可双指缩放、拖动平移的容器（内部用 UIScrollView 实现，行为与系统相册一致）：
+/// - 未放大时不影响外层 TabView 的左右翻页；
+/// - 放大后可单指拖动查看细节。
+private struct ZoomableScrollView<Content: View>: UIViewRepresentable {
+    var onTap: (() -> Void)? = nil
+    var content: Content
+
+    init(onTap: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+        self.onTap = onTap
+        self.content = content()
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> ZoomScrollView {
+        let scrollView = ZoomScrollView()
+        scrollView.delegate = context.coordinator
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 6
+        scrollView.bounces = false
+        scrollView.bouncesZoom = true
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.backgroundColor = .clear
+        scrollView.contentInsetAdjustmentBehavior = .never
+
+        let host = UIHostingController(rootView: content)
+        host.view.backgroundColor = .clear
+        host.view.isUserInteractionEnabled = false
+        host.view.autoresizingMask = []
+        scrollView.addSubview(host.view)
+
+        context.coordinator.scrollView = scrollView
+        context.coordinator.host = host
+        context.coordinator.onTap = onTap
+
+        scrollView.onLayoutSubviews = { [weak scrollView] in
+            guard let scrollView else { return }
+            context.coordinator.layoutContent(in: scrollView)
+        }
+
+        // 双击放大 / 缩小
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        scrollView.addGestureRecognizer(doubleTap)
+
+        if onTap != nil {
+            let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap))
+            tap.numberOfTapsRequired = 1
+            tap.require(toFail: doubleTap)
+            scrollView.addGestureRecognizer(tap)
+        }
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: ZoomScrollView, context: Context) {
+        context.coordinator.host?.rootView = content
+        context.coordinator.onTap = onTap
+        context.coordinator.layoutContent(in: scrollView)
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        weak var scrollView: ZoomScrollView?
+        var host: UIHostingController<Content>?
+        var onTap: (() -> Void)?
+        private var configuredSize: CGSize = .zero
+
+        @objc func handleTap() {
+            onTap?()
+        }
+
+        @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+            guard let scrollView else { return }
+            if scrollView.zoomScale > 1.01 {
+                scrollView.setZoomScale(1, animated: true)
+            } else {
+                let location = recognizer.location(in: scrollView)
+                scrollView.zoom(to: zoomRect(in: scrollView, scale: 2.5, center: location), animated: true)
+            }
+        }
+
+        private func zoomRect(in scrollView: UIScrollView, scale: CGFloat, center: CGPoint) -> CGRect {
+            let size = scrollView.bounds.size
+            let width = size.width / scale
+            let height = size.height / scale
+            return CGRect(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height)
+        }
+
+        func layoutContent(in scrollView: UIScrollView) {
+            guard let host else { return }
+            let bounds = scrollView.bounds
+            guard bounds.width > 0, bounds.height > 0 else { return }
+            guard configuredSize != bounds.size else { return }
+            configuredSize = bounds.size
+            scrollView.zoomScale = 1
+            scrollView.contentOffset = .zero
+            host.view.frame = CGRect(origin: .zero, size: bounds.size)
+            scrollView.contentSize = bounds.size
+            scrollView.contentInset = .zero
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            host?.view
+        }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            guard let host else { return }
+            let insetX = max((scrollView.bounds.width - host.view.frame.width) / 2, 0)
+            let insetY = max((scrollView.bounds.height - host.view.frame.height) / 2, 0)
+            scrollView.contentInset = UIEdgeInsets(top: insetY, left: insetX, bottom: insetY, right: insetX)
+        }
+    }
+}
+
+/// 在每次布局后回调，用于在首次拿到非零尺寸时初始化内容
+private final class ZoomScrollView: UIScrollView {
+    var onLayoutSubviews: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayoutSubviews?()
+    }
 }
