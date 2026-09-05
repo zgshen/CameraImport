@@ -12,6 +12,7 @@ import UIKit
 import AVFoundation
 import ImageIO
 import CoreImage
+import QuickLookThumbnailing
 
 /// 相机连接状态
 enum CameraState {
@@ -331,9 +332,15 @@ final class CameraManager: NSObject, ObservableObject {
             switch result {
             case .success(let data):
                 let isRaw = file.isRaw
+                let name = file.name
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let image = Self.decodeImage(from: data, isRaw: isRaw)
-                    DispatchQueue.main.async { completion(image) }
+                    let image = Self.decodeImage(from: data, isRaw: isRaw, fileName: name)
+                    DispatchQueue.main.async {
+                        if image == nil, isRaw {
+                            file.loadError = "无法解码该 RAW 文件（\(Self.rawDiagnostic(data))）"
+                        }
+                        completion(image)
+                    }
                 }
             case .failure:
                 DispatchQueue.main.async { completion(nil) }
@@ -386,38 +393,44 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - 解码与封面生成
 
-    /// 多策略解码：常规 UIImage → RAW 内嵌预览兜底
-    private static func decodeImage(from data: Data, isRaw: Bool) -> UIImage? {
+    /// 多策略解码：常规 UIImage → QuickLook / Core Image RAW 预览
+    private static func decodeImage(from data: Data, isRaw: Bool, fileName: String) -> UIImage? {
         if let image = UIImage(data: data) {
             return image
         }
         guard isRaw else { return nil }
-        // 某些 RAW 变体（如部分索尼 ARW）iOS 无法完整解码，
-        // 退回相机内嵌的预览图（拍摄时回放看到的那张），比网格缩略图清晰得多
-        return rawPreview(from: data)
+        return rawPreview(from: data, fileName: fileName)
     }
 
-    /// 共享的 Core Image 渲染上下文（软件渲染，线程安全）
-    private static let ciContext = CIContext(options: [.useSoftwareRenderer: true])
+    /// 共享的 Core Image 渲染上下文（GPU 加速，线程安全）
+    private static let ciContext = CIContext()
 
-    /// 从 RAW 解码预览：优先用 Core Image RAW 引擎（与文件 App / QuickLook 一致），
-    /// 失败再退回 ImageIO 内嵌预览。
-    private static func rawPreview(from data: Data) -> UIImage? {
-        // 1) Core Image RAW 引擎，按最大 3000px 缩小渲染（省内存）
-        if let filter = CIRAWFilter(imageData: data, identifierHint: nil),
-           let output = filter.outputImage {
-            let extent = output.extent
-            if !extent.isInfinite, extent.width > 1, extent.height > 1 {
+    /// 从 RAW 解码预览：与文件 App / QuickLook 同一套 Core Image 引擎，
+    /// 优先取相机内嵌预览（文件 App 显示的正是这张），失败再完整解码、再 ImageIO。
+    /// RAW 预览：优先用 QuickLook（与文件 App 完全相同的引擎，能取到相机内嵌预览），
+    /// 失败再用 Core Image / ImageIO 解码。
+    private static func rawPreview(from data: Data, fileName: String) -> UIImage? {
+        // 1) QuickLook 预览（文件 App 用的就是它）
+        if let image = quickLookPreview(from: data, fileName: fileName) {
+            return image
+        }
+        // 2) Core Image RAW：内嵌预览 / 完整解码
+        if let filter = CIRAWFilter(imageData: data, identifierHint: nil) {
+            let candidates: [CIImage?] = [filter.previewImage, filter.outputImage]
+            for candidate in candidates {
+                guard let image = candidate else { continue }
+                let extent = image.extent
+                guard !extent.isInfinite, extent.width > 1, extent.height > 1 else { continue }
                 let maxDim: CGFloat = 3000
                 let longest = max(extent.width, extent.height)
                 let scale: CGFloat = longest > maxDim ? maxDim / longest : 1
-                let scaled = scale == 1 ? output : output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                let scaled = scale == 1 ? image : image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
                 if let cg = ciContext.createCGImage(scaled, from: scaled.extent) {
                     return UIImage(cgImage: cg)
                 }
             }
         }
-        // 2) ImageIO 强制 RAW 解码（缩略图 API + 最大边长，与文件 App 同一套引擎）
+        // 3) ImageIO 强制 RAW 解码（缩略图 API + 最大边长）
         if let source = CGImageSourceCreateWithData(data as CFData, nil) {
             let decode: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -428,16 +441,37 @@ final class CameraManager: NSObject, ObservableObject {
             if let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, decode as CFDictionary) {
                 return UIImage(cgImage: cg)
             }
-            // 3) 内嵌预览兜底（无需解码，可能较小）
-            let embedded: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-            if let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, embedded as CFDictionary) {
-                return UIImage(cgImage: cg)
-            }
         }
         return nil
+    }
+
+    /// 用 QuickLook 生成预览（同步，后台线程调用）
+    private static func quickLookPreview(from data: Data, fileName: String) -> UIImage? {
+        guard let url = writeTempFile(data: data, fileName: fileName) else { return nil }
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: 2048, height: 2048),
+            scale: 2,
+            representationTypes: .thumbnail
+        )
+        var image: UIImage?
+        let semaphore = DispatchSemaphore(value: 0)
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, _ in
+            image = thumbnail?.uiImage
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return image
+    }
+
+    /// 解码失败时的诊断信息（文件类型 + 数据大小）
+    private static func rawDiagnostic(_ data: Data) -> String {
+        let sizeText = ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+        if let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let type = CGImageSourceGetType(source) as String? {
+            return "\(type), \(sizeText)"
+        }
+        return sizeText
     }
 
     /// 判断缩略图是否“空白”（读卡器对部分视频返回的占位封面常为纯白/透明）

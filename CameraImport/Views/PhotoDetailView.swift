@@ -103,6 +103,21 @@ private struct PhotoPageView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if file.isRaw {
+                // RAW：不显示网格小图，避免把缩略图误当成预览结果
+                if let error = file.loadError {
+                    ContentUnavailableView(
+                        "无法预览该 RAW",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(error)
+                    )
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text(file.isLoadingFull ? "正在加载…" : "正在解码…")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } else if let cg = file.thumbnail {
                 Image(decorative: cg, scale: 1)
                     .resizable()
@@ -160,8 +175,8 @@ private struct PhotoPageView: View {
         guard file.fullImage == nil else { return }
         manager.decodedImage(for: file) { image in
             file.fullImage = image
-            if image == nil && file.thumbnail == nil && file.loadError == nil {
-                file.loadError = "无法解码该图片"
+            if image == nil && (file.isRaw || file.thumbnail == nil) && file.loadError == nil {
+                file.loadError = file.isRaw ? "无法解码该 RAW 文件" : "无法解码该图片"
             }
         }
     }
