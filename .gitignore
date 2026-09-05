@@ -1,0 +1,16 @@
+# Xcode / macOS 临时与编译文件
+build/
+DerivedData/
+*.ipa
+*.app
+*.dSYM
+.DS_Store
+
+# 个人 Xcode 设置
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# 证书与私钥（防止泄露）
+*.p12
+*.mobileprovision

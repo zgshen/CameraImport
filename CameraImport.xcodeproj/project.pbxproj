@@ -14,6 +14,10 @@
 		AD7902EC30494DB300D526F1 /* CameraImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD7902EB30494DB300D526F1 /* CameraImportTests.swift */; };
 		AD7902F630494DB300D526F1 /* CameraImportUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD7902F530494DB300D526F1 /* CameraImportUITests.swift */; };
 		AD7902F830494DB300D526F1 /* CameraImportUITestsLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD7902F730494DB300D526F1 /* CameraImportUITestsLaunchTests.swift */; };
+		AD79030530494DB300D526F1 /* CameraManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD79030430494DB300D526F1 /* CameraManager.swift */; };
+		AD79030730494DB300D526F1 /* PhotoLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD79030630494DB300D526F1 /* PhotoLibraryView.swift */; };
+		AD79030930494DB300D526F1 /* PhotoDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD79030830494DB300D526F1 /* PhotoDetailView.swift */; };
+		AD79030B30494DB300D526F1 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD79030A30494DB300D526F1 /* ShareSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +48,10 @@
 		AD7902F130494DB300D526F1 /* CameraImportUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CameraImportUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AD7902F530494DB300D526F1 /* CameraImportUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraImportUITests.swift; sourceTree = "<group>"; };
 		AD7902F730494DB300D526F1 /* CameraImportUITestsLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraImportUITestsLaunchTests.swift; sourceTree = "<group>"; };
+		AD79030430494DB300D526F1 /* CameraManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraManager.swift; sourceTree = "<group>"; };
+		AD79030630494DB300D526F1 /* PhotoLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/PhotoLibraryView.swift"; sourceTree = "<group>"; };
+		AD79030830494DB300D526F1 /* PhotoDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/PhotoDetailView.swift"; sourceTree = "<group>"; };
+		AD79030A30494DB300D526F1 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Views/ShareSheet.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -96,6 +104,10 @@
 			children = (
 				AD7902DA30494DAB00D526F1 /* CameraImportApp.swift */,
 				AD7902DC30494DAB00D526F1 /* ContentView.swift */,
+				AD79030430494DB300D526F1 /* CameraManager.swift */,
+				AD79030630494DB300D526F1 /* PhotoLibraryView.swift */,
+				AD79030830494DB300D526F1 /* PhotoDetailView.swift */,
+				AD79030A30494DB300D526F1 /* ShareSheet.swift */,
 				AD7902DE30494DB200D526F1 /* Assets.xcassets */,
 				AD7902E030494DB200D526F1 /* Preview Content */,
 			);
@@ -259,6 +271,10 @@
 			files = (
 				AD7902DD30494DAB00D526F1 /* ContentView.swift in Sources */,
 				AD7902DB30494DAB00D526F1 /* CameraImportApp.swift in Sources */,
+				AD79030530494DB300D526F1 /* CameraManager.swift in Sources */,
+				AD79030730494DB300D526F1 /* PhotoLibraryView.swift in Sources */,
+				AD79030930494DB300D526F1 /* PhotoDetailView.swift in Sources */,
+				AD79030B30494DB300D526F1 /* ShareSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -425,6 +441,7 @@
 				DEVELOPMENT_TEAM = NDK46N83H6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "需要访问相册以保存照片";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -434,7 +451,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zguishen.CameraImport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -454,6 +471,7 @@
 				DEVELOPMENT_TEAM = NDK46N83H6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "需要访问相册以保存照片";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -463,7 +481,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zguishen.CameraImport;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
