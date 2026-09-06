@@ -67,16 +67,6 @@ struct PhotoDetailView: View {
         .padding(.bottom, 8)
     }
 
-    private func loadImage(for file: CameraFile) {
-        guard file.fullImage == nil else { return }
-        manager.decodedImage(for: file) { image in
-            file.fullImage = image
-            if image == nil && file.thumbnail == nil && file.loadError == nil {
-                file.loadError = "无法解码该图片"
-            }
-        }
-    }
-
     private func prepareShare() {
         isPreparingShare = true
         manager.prepareShareItems(for: [currentFile]) { items in
@@ -109,14 +99,14 @@ private struct PhotoPageView: View {
                 // RAW：不显示网格小图，避免把缩略图误当成预览结果
                 if let error = file.loadError {
                     ContentUnavailableView(
-                        "无法预览该 RAW",
+                        L10n.tr("detail.raw.unavailable"),
                         systemImage: "exclamationmark.triangle",
                         description: Text(error)
                     )
                 } else {
                     VStack(spacing: 12) {
                         ProgressView()
-                        Text(file.isLoadingFull ? "正在加载…" : "正在解码…")
+                        Text(file.isLoadingFull ? L10n.tr("detail.loading") : L10n.tr("detail.decoding"))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -128,12 +118,12 @@ private struct PhotoPageView: View {
             } else if file.isLoadingFull {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("正在加载…")
+                    Text(L10n.tr("detail.loading"))
                         .foregroundStyle(.secondary)
                 }
             } else if let error = file.loadError {
                 ContentUnavailableView(
-                    "加载失败",
+                    L10n.tr("detail.load.failed"),
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
@@ -158,7 +148,7 @@ private struct PhotoPageView: View {
         } else {
             VStack(spacing: 12) {
                 ProgressView()
-                Text("正在加载视频…")
+                Text(L10n.tr("detail.loading.video"))
                     .foregroundStyle(.secondary)
             }
         }
@@ -178,7 +168,7 @@ private struct PhotoPageView: View {
         manager.decodedImage(for: file) { image in
             file.fullImage = image
             if image == nil && (file.isRaw || file.thumbnail == nil) && file.loadError == nil {
-                file.loadError = file.isRaw ? "无法解码该 RAW 文件" : "无法解码该图片"
+                file.loadError = file.isRaw ? L10n.tr("detail.decode.failed.raw") : L10n.tr("detail.decode.failed.image")
             }
         }
     }

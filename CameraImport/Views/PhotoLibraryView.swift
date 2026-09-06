@@ -10,6 +10,8 @@ import SwiftUI
 /// 相册网格：时间倒序、支持多选分享
 struct PhotoLibraryView: View {
     @ObservedObject var manager: CameraManager
+    @Binding var path: NavigationPath
+    @Environment(\.dismiss) private var dismiss
 
     @State private var selectionMode = false
     @State private var selected: Set<ObjectIdentifier> = []
@@ -26,25 +28,62 @@ struct PhotoLibraryView: View {
 
     var body: some View {
         content
-            .navigationTitle(manager.cameraName ?? "相机")
+            .navigationTitle(manager.cameraName ?? L10n.tr("device.connected"))
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        manager.toggleSortOrder()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.up.arrow.down")
-                            Text(manager.sortOrder == .newestFirst ? "最新优先" : "最旧优先")
+                    if selectionMode {
+                        // 选择模式：左侧为最新/最旧排序
+                        Button {
+                            manager.toggleSortOrder()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.up.arrow.down")
+                                Text(manager.sortOrder == .newestFirst ? L10n.tr("library.sort.newest") : L10n.tr("library.sort.oldest"))
+                            }
+                        }
+                    } else {
+                        // 普通模式：左侧为返回
+                        Button {
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "chevron.left")
+                                Text(L10n.tr("detail.back"))
+                            }
                         }
                     }
-                    .disabled(manager.files.isEmpty)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     if !manager.files.isEmpty {
-                        Button(selectionMode ? "完成" : "选择") {
-                            selectionMode.toggle()
-                            if !selectionMode { selected.removeAll() }
+                        if selectionMode {
+                            // 选择模式：右侧为完成
+                            Button(L10n.tr("library.done")) {
+                                selectionMode = false
+                                selected.removeAll()
+                            }
+                        } else {
+                            // 普通模式：右侧为折叠菜单
+                            Menu {
+                                Picker(L10n.tr("library.sort"), selection: sortBinding) {
+                                    Label(L10n.tr("library.sort.newest"), systemImage: "arrow.down.to.line")
+                                        .tag(SortOrder.newestFirst)
+                                    Label(L10n.tr("library.sort.oldest"), systemImage: "arrow.up.to.line")
+                                        .tag(SortOrder.oldestFirst)
+                                }
+                                .pickerStyle(.inline)
+
+                                Divider()
+
+                                Button {
+                                    selectionMode = true
+                                } label: {
+                                    Label(L10n.tr("library.select"), systemImage: "checkmark.circle")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                            }
                         }
                     }
                 }
@@ -57,9 +96,17 @@ struct PhotoLibraryView: View {
             .sheet(isPresented: $showingShare) {
                 ShareSheet(items: shareItems)
             }
-            .navigationDestination(for: CameraFile.self) { file in
-                PhotoDetailView(file: file, manager: manager)
+    }
+
+    private var sortBinding: Binding<SortOrder> {
+        Binding(
+            get: { manager.sortOrder },
+            set: { newValue in
+                if newValue != manager.sortOrder {
+                    manager.toggleSortOrder()
+                }
             }
+        )
     }
 
     @ViewBuilder
@@ -68,14 +115,14 @@ struct PhotoLibraryView: View {
             if manager.isEnumerating {
                 VStack(spacing: 12) {
                     ProgressView()
-                    Text("正在读取设备内容…")
+                    Text(L10n.tr("library.enumerating"))
                         .foregroundStyle(.secondary)
                 }
             } else {
                 ContentUnavailableView(
-                    "设备中没有图片",
+                    L10n.tr("library.empty.title"),
                     systemImage: "photo.on.rectangle.angled",
-                    description: Text("请检查设备中是否有照片或视频")
+                    description: Text(L10n.tr("library.empty.hint"))
                 )
             }
         } else {
@@ -116,13 +163,18 @@ struct PhotoLibraryView: View {
                         isSelected: selected.contains(file.id)
                     )
                 }
+                .buttonStyle(.plain)
             } else {
-                NavigationLink(value: file) {
-                    FileCellView(file: file, selectionMode: false, isSelected: false)
-                }
+                FileCellView(file: file, selectionMode: false, isSelected: false)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        path.append(Route.detail(file))
+                    }
+                    .onLongPressGesture(minimumDuration: 0.4) {
+                        enterSelection(file)
+                    }
             }
         }
-        .buttonStyle(.plain)
         .background(
             GeometryReader { geo in
                 Color.clear.preference(
@@ -135,7 +187,7 @@ struct PhotoLibraryView: View {
 
     private var selectionBar: some View {
         ZStack {
-            Text("已选择 \(selected.count) 项")
+            Text(String(format: L10n.tr("library.selected.count"), selected.count))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -143,7 +195,7 @@ struct PhotoLibraryView: View {
                 Button {
                     toggleSelectAll()
                 } label: {
-                    Text(selected.count == manager.files.count ? "取消全选" : "全选")
+                    Text(selected.count == manager.files.count ? L10n.tr("library.deselect.all") : L10n.tr("library.select.all"))
                         .font(.subheadline)
                 }
 
@@ -155,7 +207,7 @@ struct PhotoLibraryView: View {
                     Button {
                         prepareShare()
                     } label: {
-                        Label("分享", systemImage: "square.and.arrow.up")
+                        Label(L10n.tr("library.share"), systemImage: "square.and.arrow.up")
                             .font(.headline)
                     }
                     .disabled(selected.isEmpty)
@@ -168,6 +220,11 @@ struct PhotoLibraryView: View {
     }
 
     // MARK: - 动作
+
+    private func enterSelection(_ file: CameraFile) {
+        selectionMode = true
+        selected = [file.id]
+    }
 
     private func toggleSelection(_ file: CameraFile) {
         if selected.contains(file.id) {
@@ -305,7 +362,7 @@ private struct FileCellView: View {
                         .shadow(radius: 1)
                         .padding(6)
                 } else if file.isVideo {
-                    Text("视频")
+                    Text(L10n.tr("library.badge.video"))
                         .font(.caption2.bold())
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)

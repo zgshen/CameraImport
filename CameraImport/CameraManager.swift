@@ -15,7 +15,7 @@ import CoreImage
 import QuickLookThumbnailing
 
 /// 相机连接状态
-enum CameraState {
+enum CameraState: Equatable {
     case searching
     case opening(String)
     case ready
@@ -23,7 +23,7 @@ enum CameraState {
 }
 
 /// 排序方式
-enum SortOrder {
+enum SortOrder: Hashable {
     case newestFirst
     case oldestFirst
 }
@@ -41,7 +41,7 @@ final class CameraFile: ObservableObject, Identifiable, Hashable {
 
     var id: ObjectIdentifier { ObjectIdentifier(item) }
 
-    var name: String { item.name ?? "未命名" }
+    var name: String { item.name ?? L10n.tr("file.unnamed") }
 
     /// 拍摄日期（用于排序），可被元数据更新
     @Published var creationDate: Date?
@@ -158,8 +158,8 @@ enum CameraImportError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .notAFile: return "不是有效的图片文件"
-        case .unknown: return "未知错误"
+        case .notAFile: return L10n.tr("error.notAFile")
+        case .unknown: return L10n.tr("error.unknown")
         }
     }
 }
@@ -337,7 +337,7 @@ final class CameraManager: NSObject, ObservableObject {
                     let image = Self.decodeImage(from: data, isRaw: isRaw, fileName: name)
                     DispatchQueue.main.async {
                         if image == nil, isRaw {
-                            file.loadError = "无法解码该 RAW 文件（\(Self.rawDiagnostic(data))）"
+                            file.loadError = String(format: L10n.tr("error.decode.raw"), Self.rawDiagnostic(data))
                         }
                         completion(image)
                     }
@@ -657,7 +657,7 @@ extension CameraManager: ICDeviceBrowserDelegate {
             camera.delegate = self
             self.cameraName = camera.name
             self.lastErrorMessage = nil
-            self.state = .opening(camera.name ?? "相机")
+            self.state = .opening(camera.name ?? L10n.tr("device.camera"))
             camera.requestOpenSession()
         }
     }
