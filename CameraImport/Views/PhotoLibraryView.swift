@@ -111,20 +111,18 @@ struct PhotoLibraryView: View {
 
     @ViewBuilder
     private var content: some View {
-        if manager.files.isEmpty {
-            if manager.isEnumerating {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text(L10n.tr("library.enumerating"))
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ContentUnavailableView(
-                    L10n.tr("library.empty.title"),
-                    systemImage: "photo.on.rectangle.angled",
-                    description: Text(L10n.tr("library.empty.hint"))
-                )
+        if manager.isEnumerating {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text(L10n.tr("library.enumerating"))
+                    .foregroundStyle(.secondary)
             }
+        } else if manager.files.isEmpty {
+            ContentUnavailableView(
+                L10n.tr("library.empty.title"),
+                systemImage: "photo.on.rectangle.angled",
+                description: Text(L10n.tr("library.empty.hint"))
+            )
         } else {
             grid
         }

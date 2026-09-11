@@ -182,6 +182,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var requestedMetadata: Set<ObjectIdentifier> = []
     private var dataCompletions: [ObjectIdentifier: [(Result<Data, Error>) -> Void]] = [:]
     private var rebuildWorkItem: DispatchWorkItem?
+    private var enumerationTimeoutWorkItem: DispatchWorkItem?
     private var localThumbnailJobs: Set<ObjectIdentifier> = []
     private var catalogComplete = false
 
@@ -214,6 +215,7 @@ final class CameraManager: NSObject, ObservableObject {
         localThumbnailJobs = []
         catalogComplete = false
         rebuildWorkItem?.cancel()
+        enumerationTimeoutWorkItem?.cancel()
         isEnumerating = false
         if !browser.isBrowsing {
             browser.start()
@@ -559,12 +561,25 @@ final class CameraManager: NSObject, ObservableObject {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.rebuildFiles()
-            // 已有文件、或目录已完整加载时才结束“正在读取”状态；
-            // 否则保持枚举中，避免目录尚未扫描完就误报“没有照片”
-            self.isEnumerating = self.files.isEmpty && !self.catalogComplete
+            // 目录未完整加载前始终保持“正在读取”状态，
+            // 避免先显示最旧的一批、再跳成最新排序
+            self.isEnumerating = !self.catalogComplete
         }
         rebuildWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
+    }
+
+    /// 兜底：若迟迟收不到“目录加载完成”回调，则强制结束枚举
+    private func scheduleEnumerationTimeout() {
+        enumerationTimeoutWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.catalogComplete = true
+            self.isEnumerating = false
+            self.rebuildFiles()
+        }
+        enumerationTimeoutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: workItem)
     }
 
     /// 追加已发现条目（用 Set 去重，O(1) 查找，替代 O(n²) 的 contains）
@@ -636,6 +651,7 @@ final class CameraManager: NSObject, ObservableObject {
         localThumbnailJobs = []
         catalogComplete = false
         rebuildWorkItem?.cancel()
+        enumerationTimeoutWorkItem?.cancel()
         isEnumerating = false
         state = .disconnected
     }
@@ -693,6 +709,7 @@ extension CameraManager: ICDeviceDelegate {
             self.state = .ready
             self.isEnumerating = true
             self.scheduleRebuild()
+            self.scheduleEnumerationTimeout()
         }
     }
 
@@ -708,6 +725,7 @@ extension CameraManager: ICDeviceDelegate {
                 self.state = .ready
                 self.isEnumerating = true
                 self.scheduleRebuild()
+                self.scheduleEnumerationTimeout()
             }
         }
     }
@@ -788,6 +806,7 @@ extension CameraManager: ICCameraDeviceDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.rebuildWorkItem?.cancel()
+            self.enumerationTimeoutWorkItem?.cancel()
             self.camera = device
             self.cameraName = device.name
             self.state = .ready
