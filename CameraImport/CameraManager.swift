@@ -183,6 +183,7 @@ final class CameraManager: NSObject, ObservableObject {
     private var dataCompletions: [ObjectIdentifier: [(Result<Data, Error>) -> Void]] = [:]
     private var rebuildWorkItem: DispatchWorkItem?
     private var localThumbnailJobs: Set<ObjectIdentifier> = []
+    private var catalogComplete = false
 
     override init() {
         super.init()
@@ -211,6 +212,7 @@ final class CameraManager: NSObject, ObservableObject {
         requestedMetadata = []
         dataCompletions = [:]
         localThumbnailJobs = []
+        catalogComplete = false
         rebuildWorkItem?.cancel()
         isEnumerating = false
         if !browser.isBrowsing {
@@ -556,11 +558,13 @@ final class CameraManager: NSObject, ObservableObject {
         rebuildWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.isEnumerating = false
             self.rebuildFiles()
+            // 已有文件、或目录已完整加载时才结束“正在读取”状态；
+            // 否则保持枚举中，避免目录尚未扫描完就误报“没有照片”
+            self.isEnumerating = self.files.isEmpty && !self.catalogComplete
         }
         rebuildWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
     }
 
     /// 追加已发现条目（用 Set 去重，O(1) 查找，替代 O(n²) 的 contains）
@@ -630,6 +634,7 @@ final class CameraManager: NSObject, ObservableObject {
         requestedMetadata = []
         dataCompletions = [:]
         localThumbnailJobs = []
+        catalogComplete = false
         rebuildWorkItem?.cancel()
         isEnumerating = false
         state = .disconnected
@@ -786,6 +791,7 @@ extension CameraManager: ICCameraDeviceDelegate {
             self.camera = device
             self.cameraName = device.name
             self.state = .ready
+            self.catalogComplete = true
             self.isEnumerating = false
             self.rebuildFiles()
         }
