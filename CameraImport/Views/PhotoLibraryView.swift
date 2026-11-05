@@ -93,7 +93,9 @@ struct PhotoLibraryView: View {
                     selectionBar
                 }
             }
-            .sheet(isPresented: $showingShare) {
+            .sheet(isPresented: $showingShare, onDismiss: {
+                shareItems = []
+            }) {
                 ShareSheet(items: shareItems)
             }
     }
@@ -136,6 +138,10 @@ struct PhotoLibraryView: View {
                         .onAppear {
                             manager.loadThumbnail(for: file)
                             manager.loadMetadata(for: file)
+                        }
+                        .onDisappear {
+                            // 单元格滑出屏幕后允许缓存被回收，避免缩略图无限累积
+                            manager.releaseThumbnail(for: file)
                         }
                 }
             }

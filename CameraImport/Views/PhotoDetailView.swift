@@ -25,7 +25,9 @@ struct PhotoDetailView: View {
     var body: some View {
         TabView(selection: $currentFile) {
             ForEach(manager.files) { file in
-                PhotoPageView(file: file, manager: manager)
+                // 只让当前页加载大图：TabView 可能提前创建相邻页面，
+                // 若不限制会一次性下载/解码多张大图造成内存峰值
+                PhotoPageView(file: file, manager: manager, isCurrent: file == currentFile)
                     .tag(file)
             }
         }
@@ -45,7 +47,22 @@ struct PhotoDetailView: View {
         .overlay(alignment: .bottom) {
             infoBar
         }
-        .sheet(isPresented: $showingShare) {
+        .onAppear {
+            manager.activeDetailFile = currentFile
+            manager.releaseLoadedResources(keepingAround: currentFile)
+        }
+        .onChange(of: currentFile) { _, newFile in
+            manager.activeDetailFile = newFile
+            // 只保留当前图片及其相邻页的整图，释放掉之前看过的图片
+            manager.releaseLoadedResources(keepingAround: newFile)
+        }
+        .onDisappear {
+            manager.activeDetailFile = nil
+            manager.releaseLoadedResources(keepingAround: nil)
+        }
+        .sheet(isPresented: $showingShare, onDismiss: {
+            shareItems = []
+        }) {
             ShareSheet(items: shareItems)
         }
     }
@@ -81,6 +98,7 @@ struct PhotoDetailView: View {
 private struct PhotoPageView: View {
     @ObservedObject var file: CameraFile
     @ObservedObject var manager: CameraManager
+    let isCurrent: Bool
 
     var body: some View {
         ZStack {
@@ -131,8 +149,9 @@ private struct PhotoPageView: View {
                 ProgressView()
             }
         }
-        .task {
-            load()
+        .task(id: isCurrent) {
+            guard isCurrent else { return }
+            await load()
         }
     }
 
@@ -154,18 +173,26 @@ private struct PhotoPageView: View {
         }
     }
 
-    private func load() {
+    private func load() async {
+        // 请求一张小缩略图作为加载占位
+        manager.loadThumbnail(for: file)
+
         if file.isVideo {
             guard file.videoURL == nil else { return }
-            manager.loadVideoURL(for: file) { _ in }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                manager.loadVideoURL(for: file) { _ in
+                    continuation.resume()
+                }
+            }
         } else {
-            loadImage()
-        }
-    }
-
-    private func loadImage() {
-        guard file.fullImage == nil else { return }
-        manager.decodedImage(for: file) { image in
+            guard file.fullImage == nil else { return }
+            let image = await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
+                manager.decodedImage(for: file) { image in
+                    continuation.resume(returning: image)
+                }
+            }
+            // 页面已被滑走（或已离开详情页）时，不再持有解码后的大图
+            guard !Task.isCancelled else { return }
             file.fullImage = image
             if image == nil && (file.isRaw || file.thumbnail == nil) && file.loadError == nil {
                 file.loadError = file.isRaw ? L10n.tr("detail.decode.failed.raw") : L10n.tr("detail.decode.failed.image")
@@ -309,11 +336,21 @@ private final class VideoPlayerModel: ObservableObject {
 
     func stop() {
         hideWorkItem?.cancel()
+        hideWorkItem = nil
         if let observer = timeObserver {
             player.removeTimeObserver(observer)
             self.timeObserver = nil
         }
         player.pause()
+        // 释放 AVPlayerItem 及解码器占用的内存
+        player.replaceCurrentItem(with: nil)
+    }
+
+    deinit {
+        hideWorkItem?.cancel()
+        if let observer = timeObserver {
+            player.removeTimeObserver(observer)
+        }
     }
 
     private func scheduleAutoHide() {
@@ -340,6 +377,10 @@ private struct PlayerLayerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: PlayerUIView, context: Context) {
         uiView.playerLayer.player = player
+    }
+
+    static func dismantleUIView(_ uiView: PlayerUIView, coordinator: ()) {
+        uiView.playerLayer.player = nil
     }
 }
 

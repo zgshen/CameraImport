@@ -69,6 +69,13 @@ final class CameraFile: ObservableObject, Identifiable, Hashable {
         return Self.shortDateFormatter.string(from: date)
     }
 
+    /// 释放占用内存较大的资源（整图 / 原始数据）。
+    /// 缩略图保留，网格可以继续正常显示；需要分享时会按需重新下载。
+    func releaseFullResources() {
+        data = nil
+        fullImage = nil
+    }
+
     /// 依据扩展名判断是否为 RAW
     var isRaw: Bool {
         let ext = Self.pathExtension(of: name)
@@ -186,14 +193,43 @@ final class CameraManager: NSObject, ObservableObject {
     private var localThumbnailJobs: Set<ObjectIdentifier> = []
     private var catalogComplete = false
 
+    /// 当前正在浏览的大图（用于内存告警时保留正在看的那张）
+    var activeDetailFile: CameraFile?
+
+    // MARK: 缩略图内存管理
+    /// 当前可见单元格的缩略图，用于淘汰时保护屏幕上的内容
+    private var wantedThumbnails: Set<ObjectIdentifier> = []
+    /// 最近使用顺序（越靠后越新），用于按预算淘汰旧缩略图
+    private var thumbnailLRU: [ObjectIdentifier] = []
+    /// 每个缩略图占用的近似字节数
+    private var thumbnailCosts: [ObjectIdentifier: Int] = [:]
+    private var thumbnailBytes = 0
+    /// 缩略图内存预算（超过后淘汰不可见的旧缩略图）
+    private static let thumbnailBudget = 64 * 1024 * 1024
+    /// 缩略图最长边（显示的单元格很小，无需保留相机返回的大图）
+    private static let thumbnailMaxPixelSize: CGFloat = 400
+
+    private var memoryWarningObserver: NSObjectProtocol?
+
     override init() {
         super.init()
         browser.delegate = self
         browser.browsedDeviceTypeMask = .camera
         browser.start()
+
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
     }
 
     deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
         browser.delegate = nil
         browser.stop()
     }
@@ -211,8 +247,10 @@ final class CameraManager: NSObject, ObservableObject {
         discoveredIDs = []
         requestedThumbnails = []
         requestedMetadata = []
-        dataCompletions = [:]
+        failPendingDownloads()
         localThumbnailJobs = []
+        resetThumbnailCache()
+        activeDetailFile = nil
         catalogComplete = false
         rebuildWorkItem?.cancel()
         enumerationTimeoutWorkItem?.cancel()
@@ -330,16 +368,30 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    /// 解码为 UIImage（后台线程解码）
+    /// 解码为 UIImage（后台线程解码，限制并发数，避免快速翻页时多张大图同时解码撑爆内存）
     func decodedImage(for file: CameraFile, completion: @escaping (UIImage?) -> Void) {
         loadFullData(for: file) { result in
             switch result {
             case .success(let data):
                 let isRaw = file.isRaw
                 let name = file.name
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let image = Self.decodeImage(from: data, isRaw: isRaw, fileName: name)
+                Self.decodeQueue.addOperation { [weak self] in
+                    // 页面已经被滑走时不再解码，直接丢弃数据
+                    let active = DispatchQueue.main.sync { self?.activeDetailFile }
+                    if let active, active !== file {
+                        DispatchQueue.main.async {
+                            file.data = nil
+                            completion(nil)
+                        }
+                        return
+                    }
+
+                    let image = autoreleasepool {
+                        Self.decodeImage(from: data, isRaw: isRaw, fileName: name)
+                    }
                     DispatchQueue.main.async {
+                        // 解码完成后释放原始数据，避免完整文件长期驻留内存；分享时可按需重新下载
+                        file.data = nil
                         if image == nil, isRaw {
                             file.loadError = String(format: L10n.tr("error.decode.raw"), Self.rawDiagnostic(data))
                         }
@@ -362,6 +414,8 @@ final class CameraManager: NSObject, ObservableObject {
             switch result {
             case .success(let data):
                 if let url = Self.writeTempFile(data: data, fileName: file.name) {
+                    // 视频已写入临时文件，释放内存中的完整数据
+                    file.data = nil
                     file.videoURL = url
                     completion(url)
                 } else {
@@ -384,6 +438,8 @@ final class CameraManager: NSObject, ObservableObject {
             loadFullData(for: file) { result in
                 if case .success(let data) = result,
                    let url = Self.writeTempFile(data: data, fileName: file.name) {
+                    // 已写入临时文件，释放完整数据，避免批量分享时内存暴涨
+                    file.data = nil
                     lock.lock(); urls.append(url); lock.unlock()
                 }
                 group.leave()
@@ -397,13 +453,38 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - 解码与封面生成
 
-    /// 多策略解码：常规 UIImage → QuickLook / Core Image RAW 预览
+    /// 限制同时解码的图片数量
+    private static let decodeQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 2
+        queue.qualityOfService = .userInitiated
+        return queue
+    }()
+
+    /// 解码图片：RAW 走专用预览管线，其它格式统一做降采样，
+    /// 避免 4000 万像素照片解码后占用上百 MB 内存
     private static func decodeImage(from data: Data, isRaw: Bool, fileName: String) -> UIImage? {
-        if let image = UIImage(data: data) {
-            return image
+        if isRaw {
+            return rawPreview(from: data, fileName: fileName)
         }
-        guard isRaw else { return nil }
-        return rawPreview(from: data, fileName: fileName)
+        return downsampledImage(from: data)
+    }
+
+    /// 降采样解码（最长边 3000px），兼顾大图清晰度与内存占用
+    private static func downsampledImage(from data: Data, maxPixelSize: Int = 3000) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return UIImage(data: data)
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        if let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return UIImage(cgImage: cg)
+        }
+        return UIImage(data: data)
     }
 
     /// 共享的 Core Image 渲染上下文（GPU 加速，线程安全）
@@ -465,6 +546,8 @@ final class CameraManager: NSObject, ObservableObject {
             semaphore.signal()
         }
         semaphore.wait()
+        // QuickLook 的临时文件用完即删，避免浏览大量 RAW 后占满磁盘
+        try? FileManager.default.removeItem(at: url)
         return image
     }
 
@@ -507,6 +590,30 @@ final class CameraManager: NSObject, ObservableObject {
         return true
     }
 
+    /// 缩小缩略图到显示所需尺寸，避免每张缩略图占用过多内存
+    private static func downscaleThumbnail(_ image: CGImage) -> CGImage {
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        let longest = max(width, height)
+        guard longest > thumbnailMaxPixelSize else { return image }
+
+        let scale = thumbnailMaxPixelSize / longest
+        let newWidth = max(Int((width * scale).rounded()), 1)
+        let newHeight = max(Int((height * scale).rounded()), 1)
+        guard let context = CGContext(
+            data: nil,
+            width: newWidth,
+            height: newHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        return context.makeImage() ?? image
+    }
+
     /// 本地生成视频封面（读卡器无法出封面时的兜底）
     private func generateLocalVideoThumbnail(for file: CameraFile) {
         let key = file.id
@@ -516,9 +623,11 @@ final class CameraManager: NSObject, ObservableObject {
             guard let self, let url else { return }
             Self.extractVideoThumbnail(from: url) { cgImage in
                 DispatchQueue.main.async {
-                    if let cgImage, !Self.isBlank(cgImage) {
-                        file.thumbnail = cgImage
-                    }
+                    guard let cgImage, !Self.isBlank(cgImage) else { return }
+                    // 已经滑出屏幕且不是当前大图时不再保留封面
+                    let isWanted = self.wantedThumbnails.contains(key) || self.activeDetailFile?.id == key
+                    guard isWanted else { return }
+                    self.storeThumbnail(cgImage, for: file)
                 }
             }
         }
@@ -526,7 +635,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// 从视频提取首帧作为封面
     private static func extractVideoThumbnail(from url: URL, completion: @escaping (CGImage?) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async {
+        decodeQueue.addOperation {
             let asset = AVURLAsset(url: url)
             let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
@@ -623,11 +732,34 @@ final class CameraManager: NSObject, ObservableObject {
 
     /// 懒加载缩略图（幂等，单元格出现时调用）
     func loadThumbnail(for file: CameraFile) {
-        guard let cameraFile = file.item as? ICCameraFile else { return }
         let key = file.id
+        wantedThumbnails.insert(key)
+        markThumbnailUsed(key)
+        guard file.thumbnail == nil else { return }
+        guard let cameraFile = file.item as? ICCameraFile else { return }
         guard !requestedThumbnails.contains(key) else { return }
         requestedThumbnails.insert(key)
         cameraFile.requestThumbnail()
+    }
+
+    /// 单元格离开屏幕时调用：移除可见标记，必要时淘汰不可见的旧缩略图
+    func releaseThumbnail(for file: CameraFile) {
+        wantedThumbnails.remove(file.id)
+        evictThumbnailsIfNeeded()
+    }
+
+    /// 只保留当前大图附近（默认 ±1 张）的整图 / 原始数据，
+    /// 避免浏览大量照片后每张看过的图都永久驻留内存
+    func releaseLoadedResources(keepingAround file: CameraFile?, radius: Int = 1) {
+        guard let file, let index = files.firstIndex(where: { $0 === file }) else {
+            files.forEach { $0.releaseFullResources() }
+            return
+        }
+        let lower = max(0, index - radius)
+        let upper = min(files.count - 1, index + radius)
+        for (i, item) in files.enumerated() where i < lower || i > upper {
+            item.releaseFullResources()
+        }
     }
 
     /// 懒加载元数据（幂等，用于拍摄日期显示）
@@ -636,6 +768,91 @@ final class CameraManager: NSObject, ObservableObject {
         guard !requestedMetadata.contains(key) else { return }
         requestedMetadata.insert(key)
         file.item.requestMetadata()
+    }
+
+    // MARK: - 缩略图内存管理
+
+    private func markThumbnailUsed(_ key: ObjectIdentifier) {
+        if thumbnailLRU.last != key {
+            thumbnailLRU.append(key)
+        }
+    }
+
+    /// 存储缩略图（限制单张尺寸，并按总预算淘汰旧缩略图）
+    private func storeThumbnail(_ thumbnail: CGImage, for file: CameraFile) {
+        let key = file.id
+        let scaled = Self.downscaleThumbnail(thumbnail)
+        if let previous = thumbnailCosts[key] {
+            thumbnailBytes -= previous
+        }
+        let cost = scaled.bytesPerRow * scaled.height
+        thumbnailCosts[key] = cost
+        thumbnailBytes += cost
+        file.thumbnail = scaled
+        markThumbnailUsed(key)
+        evictThumbnailsIfNeeded()
+    }
+
+    /// 超出预算时优先淘汰已经离开屏幕的旧缩略图
+    private func evictThumbnailsIfNeeded() {
+        guard thumbnailBytes > Self.thumbnailBudget else { return }
+        let activeKey = activeDetailFile?.id
+        var remaining: [ObjectIdentifier] = []
+        remaining.reserveCapacity(thumbnailLRU.count)
+        for key in thumbnailLRU {
+            if thumbnailBytes > Self.thumbnailBudget,
+               key != activeKey,
+               !wantedThumbnails.contains(key),
+               thumbnailCosts[key] != nil {
+                clearThumbnailMemory(for: key)
+            } else if thumbnailCosts[key] != nil {
+                remaining.append(key)
+            }
+        }
+        thumbnailLRU = remaining
+    }
+
+    /// 释放单张缩略图并同步内存计数
+    private func clearThumbnailMemory(for key: ObjectIdentifier) {
+        if let cost = thumbnailCosts.removeValue(forKey: key) {
+            thumbnailBytes -= cost
+        }
+        fileLookup[key]?.thumbnail = nil
+    }
+
+    private func resetThumbnailCache() {
+        wantedThumbnails = []
+        thumbnailLRU = []
+        thumbnailCosts = [:]
+        thumbnailBytes = 0
+    }
+
+    /// 内存告警：释放所有整图 / 原始数据，并清空缩略图缓存后重建可见缩略图
+    private func handleMemoryWarning() {
+        let keep = activeDetailFile
+        for file in files where file !== keep {
+            file.releaseFullResources()
+        }
+
+        let visible = wantedThumbnails
+        resetThumbnailCache()
+        requestedThumbnails = []
+        var keys = visible
+        if let activeKey = activeDetailFile?.id {
+            keys.insert(activeKey)
+        }
+        for key in keys {
+            guard let file = fileLookup[key] else { continue }
+            file.thumbnail = nil
+            loadThumbnail(for: file)
+        }
+    }
+
+    /// 设备断开时让所有等待中的下载回调立即失败，避免页面永久卡在加载状态
+    private func failPendingDownloads() {
+        let pending = dataCompletions
+        dataCompletions = [:]
+        pending.values.joined().forEach { $0(.failure(CameraImportError.unknown)) }
     }
 
     private func handleDisconnect() {
@@ -647,8 +864,10 @@ final class CameraManager: NSObject, ObservableObject {
         discoveredIDs = []
         requestedThumbnails = []
         requestedMetadata = []
-        dataCompletions = [:]
+        failPendingDownloads()
         localThumbnailJobs = []
+        resetThumbnailCache()
+        activeDetailFile = nil
         catalogComplete = false
         rebuildWorkItem?.cancel()
         enumerationTimeoutWorkItem?.cancel()
@@ -767,13 +986,16 @@ extension CameraManager: ICCameraDeviceDelegate {
             let key = ObjectIdentifier(item)
             self.requestedThumbnails.remove(key)
             guard let file = self.fileLookup[key] else { return }
+            // 单元格已经滑出屏幕且不是当前大图时，不必再保留缩略图
+            let isWanted = self.wantedThumbnails.contains(key) || self.activeDetailFile?.id == key
+            guard isWanted else { return }
             if let thumbnail, !Self.isBlank(thumbnail) {
-                file.thumbnail = thumbnail
+                self.storeThumbnail(thumbnail, for: file)
             } else if file.isVideo {
                 // 读卡器对部分视频无法生成封面（返回空图/nil），本地提取视频首帧兜底
                 self.generateLocalVideoThumbnail(for: file)
             } else {
-                file.thumbnail = thumbnail
+                self.clearThumbnailMemory(for: key)
             }
         }
     }
