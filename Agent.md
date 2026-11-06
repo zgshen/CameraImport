@@ -17,3 +17,4 @@ CameraImport 是一个面向 iOS 17.2+ 的 SwiftUI 应用，通过 ImageCaptureC
 - 保持 iOS 17.2+ 兼容；设备访问相关改动需考虑连接中断和大文件内存占用。
 - 项目可通过 Xcode 打开 `CameraImport.xcodeproj`；`build.sh` 和 `build_ipa.sh` 是仓库提供的构建脚本。
 - 每完成一个任务后，运行 `git add -A && git commit`；提交信息使用 Conventional Commits 格式，简要概括本次改动。
+- 每完成一个任务后，运行 `./build_ipa.sh` 编译；若编译报错，修复后重复运行，直到编译通过。
